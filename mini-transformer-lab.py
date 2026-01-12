@@ -13,6 +13,9 @@ This version:
 - Trains on a text file you provide
 - Can generate from command line
 """
+# NOTE: This used to be implemented differently but caused unstable loss;
+# simplified after debugging.
+
 
 import math
 import time
