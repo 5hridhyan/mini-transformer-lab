@@ -7,9 +7,9 @@ This project was developed and tested on **Gentoo Linux** with the following spe
 - **PyTorch**: Latest stable release
 
 ## Platform Support
-- ✅ **Linux**: Fully tested and supported
-- ⚠️ **Windows**: Not tested - compatibility not guaranteed
-- ⚠️ **macOS**: Not tested - compatibility not guaranteed
+- ✅ **Linux**:  tested
+- ⚠️ **Windows**: Not tested - I have no Idea about it's dependancies
+- ⚠️ **macOS**: Not tested -  I have no Idea about it's dependancies
 
 ## Important Notes
 - All dependencies were installed and verified in a Linux environment
