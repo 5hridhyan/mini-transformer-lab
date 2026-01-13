@@ -70,5 +70,6 @@ python3 mini-transformer-lab.py generate --checkpoint checkpoint_epoch_10.pt --p
   Use actual checkpoint names: `checkpoint_epoch_5.pt`, `checkpoint_epoch_10.pt`
 
 - **"First outputs are gibberish"**  
-  This is normal for early training!  
-  Train for more epochs (2000-2500) or use a larger dataset for more coherent text.
+  This is normal for early training.  
+  To improve coherence, train for more epochs (e.g., 2000–2500) or use a larger dataset.
+
