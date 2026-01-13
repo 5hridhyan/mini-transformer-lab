@@ -11,7 +11,7 @@ AI tools were used only during debugging and refinement — to reason about mode
 All architecture, implementation, and final code in this repository are authored by me.
 
 
-### Installation
+### Setup
 
  ```bash
 # Clone this repository
