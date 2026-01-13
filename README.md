@@ -62,19 +62,6 @@ python3 mini-transformer-lab.py train --data your_text.txt --epochs 10 --context
 python3 mini-transformer-lab.py generate --checkpoint checkpoint_epoch_10.pt --prompt "The future of AI is"
  ```
 
-### Quick Test
- ```bash
-# Create a tiny test file
-echo "Hello world! This is a test." > test.txt
-
-# Train quickly
-python3 mini-transformer-lab.py train --data test.txt --epochs 5 --context_length 16 --batch_size 2
-
-# Generate
-python3 mini-transformer-lab.py generate --checkpoint checkpoint_epoch_5.pt --prompt "Hello"
- ```
-
-
 ### Troubleshooting
 
 - **"Data too short for context length"**  
