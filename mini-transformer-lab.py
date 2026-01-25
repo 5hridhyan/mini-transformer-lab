@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
 """
-mini-transformer-lab.py
-
-A small transformer-based language model I built to actually *understand*
-how these big LLMs work under the hood. It's not about scale — it's about clarity.
-Runs fully in PyTorch, no fancy trainer, just good old loops.
-
-This version:
-- Includes attention masking, learned or sinusoidal positions
-- Handles top-k and top-p sampling correctly
-- Saves and loads checkpoints
-- Trains on a text file you provide
-- Can generate from command line
+ntg much just curious about how LLMs work underhood, so tried to built one to understand, yes it's like a "planks constant" if compared to tdys LLMs
+also it's for educational purpose if you are wondering to build one ;)
 """
 # NOTE: This used to be implemented differently but caused unstable loss;
 # simplified after debugging.
@@ -152,7 +142,6 @@ class MiniTransformer(nn.Module):
     def forward(self, tokens):
         B, T = tokens.size()
         if T > self.cfg.context_length:
-            # If sequence is too long, just use the last context_length tokens
             tokens = tokens[:, -self.cfg.context_length:]
             T = self.cfg.context_length
             
@@ -161,7 +150,7 @@ class MiniTransformer(nn.Module):
             pos = torch.arange(T, device=tokens.device).unsqueeze(0)
             pos = self.pos_embed(pos)
         else:
-            # For sinusoidal, we need to create a dummy tensor to get the right shape
+            # a dummy tensor to get the right shape
             dummy = torch.zeros(1, T, self.cfg.d_model, device=tokens.device)
             pos = self.pos_embed(dummy)
         x = self.drop(tok + pos)
@@ -179,14 +168,14 @@ class MiniTransformer(nn.Module):
             logits = self(idx_cond)
             logits = logits[:, -1, :] / max(temperature, 1e-6)
 
-            # --- top-k sampling ---
+
             if top_k is not None:
                 vocab_size = logits.size(-1)
                 k = min(top_k, vocab_size)
                 v, _ = torch.topk(logits, k)
                 logits[logits < v[:, [-1]]] = -float('Inf')
 
-            # --- top-p (nucleus) sampling ---
+ 
             if top_p is not None and top_p < 1.0:
                 sorted_logits, sorted_idx = torch.sort(logits, descending=True)
                 probs = F.softmax(sorted_logits, dim=-1)
@@ -197,7 +186,7 @@ class MiniTransformer(nn.Module):
                 sorted_logits[mask] = -float('Inf')
                 logits.scatter_(1, sorted_idx, sorted_logits)
 
-            # --- sample next token ---
+            
             probs = F.softmax(logits, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
             prompt = torch.cat((prompt, next_token), dim=1)
@@ -233,7 +222,6 @@ class CharTokenizer:
 # Training Helpers
 def get_batch(data, bs, ctx_len, device):
     """Get a random batch of training data."""
-    # Make sure we don't go out of bounds
     max_start = len(data) - ctx_len - 1
     if max_start <= 0:
         raise ValueError("Data too short for the given context length")
@@ -287,10 +275,10 @@ def load_checkpoint(path, device):
         use_learned_positions=cfg_dict["use_learned_positions"]
     )
     
-    # Recreate tokenizer
+
     tokenizer = CharTokenizer(vocab=checkpoint["tokenizer_vocab"])
     
-    # Recreate model
+
     model = MiniTransformer(cfg).to(device)
     model.load_state_dict(checkpoint["model_state"])
     
@@ -329,7 +317,7 @@ def train_model(args):
         start_epoch = checkpoint["epoch"] + 1
         print(f"Resumed from epoch {checkpoint['epoch']}")
 
-    # Calculate how many batches we can get from our training data
+    # Calculating how many batches from training data
     steps_per_epoch = max(1, len(train_data) // (args.batch_size * cfg.context_length))
     print(f"Training with {steps_per_epoch} steps per epoch")
     print(f"Total training steps: {steps_per_epoch * args.epochs}")
@@ -455,3 +443,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+#Finally, yes it is still messy and imperfect but will be sorted in future versions
+#https://github.com/Aranya-Marjara
