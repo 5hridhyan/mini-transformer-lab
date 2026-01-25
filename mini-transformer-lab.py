@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
 """
-ntg much just curious about how LLMs work underhood, so tried to built one to understand, yes it's like a "planks constant" if compared to tdys LLMs
-also it's for educational purpose if you are wondering to build one ;)
+Minimal GPT-style decoder-only Transformer implemented for educational purposes.
+
+This project was written to understand core LLM components such as:
+- causal self-attention and masking
+- pre-norm Transformer blocks
+- autoregressive training dynamics
+- sampling strategies (temperature, top-k, top-p)
+
+It is intentionally small and inefficient compared to modern LLMs.
 """
-# NOTE: This used to be implemented differently but caused unstable loss;
-# simplified after debugging.
+# NOTE:
+# An earlier version used a different attention/layout which led to unstable loss :(
+# during training. This version simplifies the block structure for stability.
+
 
 
 import math
@@ -36,7 +45,7 @@ class SinusoidalPositionalEmbedding(nn.Module):
     """Classic transformer sine-cosine positions (from 'Attention is All You Need')."""
     def __init__(self, dim: int, max_len: int = 2048):
         super().__init__()
-        # Create the positional encoding matrix once
+        # this is to create positional encoding matrix once
         pos = torch.arange(max_len).unsqueeze(1)
         div = torch.exp(torch.arange(0, dim, 2) * (-math.log(10000.0) / dim))
         pe = torch.zeros(max_len, dim)
@@ -50,7 +59,7 @@ class SinusoidalPositionalEmbedding(nn.Module):
         return self.pe[:, :x.size(1)]
 
 
-# Core Transformer Blocks 
+# core TB
 class MultiHeadAttention(nn.Module):
     """Causal self-attention (no lookahead)."""
     def __init__(self, cfg: ModelConfig):
@@ -114,7 +123,7 @@ class TransformerBlock(nn.Module):
         return x
 
 
-# Main Mini Transformer
+# kind of main mini transformer
 class MiniTransformer(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
@@ -194,7 +203,7 @@ class MiniTransformer(nn.Module):
         return prompt
 
 
-# Simple Character Tokenizer
+# sct
 class CharTokenizer:
     def __init__(self, text=None, vocab=None):
         if text is not None:
@@ -210,7 +219,7 @@ class CharTokenizer:
             raise ValueError("Need either text or vocab to create tokenizer")
 
     def encode(self, s):
-        return [self.stoi.get(c, 0) for c in s]  # Use get for safety
+        return [self.stoi.get(c, 0) for c in s]  # use get for safety
 
     def decode(self, t):
         return ''.join([self.itos.get(i, '?') for i in t])
@@ -219,7 +228,7 @@ class CharTokenizer:
         return list(self.stoi.keys())
 
 
-# Training Helpers
+# THs
 def get_batch(data, bs, ctx_len, device):
     """Get a random batch of training data."""
     max_start = len(data) - ctx_len - 1
@@ -262,7 +271,7 @@ def load_checkpoint(path, device):
     """Load model, tokenizer, and config from checkpoint"""
     checkpoint = torch.load(path, map_location=device)
     
-    # Recreate config
+    # recreating the config
     cfg_dict = checkpoint["model_config"]
     cfg = ModelConfig(
         vocab_size=cfg_dict["vocab_size"],
@@ -285,7 +294,7 @@ def load_checkpoint(path, device):
     return model, tokenizer, cfg, checkpoint
 
 
-# Training Loop
+# loop (training)
 def train_model(args):
     """The main training function - fixed to actually train properly!"""
     print(f"Loading data from {args.data}...")
@@ -308,7 +317,7 @@ def train_model(args):
     print(f"Context length: {cfg.context_length}, Model dim: {cfg.d_model}")
     print("=" * 60)
 
-    # If resuming from checkpoint
+    # if resuming from a checkpoint
     start_epoch = 1
     if args.resume:
         print(f"Resuming from {args.resume}...")
@@ -317,17 +326,17 @@ def train_model(args):
         start_epoch = checkpoint["epoch"] + 1
         print(f"Resumed from epoch {checkpoint['epoch']}")
 
-    # Calculating how many batches from training data
+    # calculating how many batches from training data
     steps_per_epoch = max(1, len(train_data) // (args.batch_size * cfg.context_length))
     print(f"Training with {steps_per_epoch} steps per epoch")
     print(f"Total training steps: {steps_per_epoch * args.epochs}")
 
-    # Training loop that actually trains on multiple batches per epoch!
+    # TL that actually trains on multiple batches per epoch!
     for epoch in range(start_epoch, args.epochs + 1):
         epoch_start = time.time()
         total_train_loss = 0
         
-        # Train for one epoch (multiple batches)
+        # train for one epoch (multiple batches)
         model.train()
         for step in range(steps_per_epoch):
             xb, yb = get_batch(train_data, args.batch_size, cfg.context_length, args.device)
@@ -338,16 +347,16 @@ def train_model(args):
             opt.step()
             total_train_loss += loss.item()
 
-        # Calculate average training loss for the epoch
+        # calculate average training loss for the epoch
         avg_train_loss = total_train_loss / steps_per_epoch
         
-        # Validation
+        # validation
         val_loss = estimate_loss(model, val_data, args.batch_size, cfg.context_length, args.device)
         epoch_time = time.time() - epoch_start
         
         print(f"epoch {epoch:02d}/{args.epochs} | train {avg_train_loss:.4f} | val {val_loss:.4f} | time {epoch_time:.1f}s")
 
-        # Save checkpoint
+        # save checkpoint
         if epoch % 5 == 0 or epoch == args.epochs:
             save_path = f"checkpoint_epoch_{epoch}.pt"
             save_checkpoint(model, opt, tok, epoch, save_path)
@@ -363,7 +372,7 @@ def train_model(args):
     print(f"Generated: {tok.decode(out[0].tolist())}")
 
 
-# Generation Function 
+# generation function 
 def generate_text(args):
     """Load a trained model and generate some text"""
     print(f"Loading model from {args.checkpoint}...")
@@ -371,7 +380,7 @@ def generate_text(args):
     
     print(f"Model loaded: {cfg.vocab_size} vocab, {cfg.context_length} context")
     
-    # Encode prompt
+    # encode the prompt
     prompt = args.prompt
     if len(prompt) > cfg.context_length:
         prompt = prompt[-cfg.context_length:]
@@ -383,7 +392,7 @@ def generate_text(args):
     print(f"PROMPT: {prompt}")
     print("GENERATING..." + "="*50)
     
-    # Generate
+    # generate!
     start_time = time.time()
     output_ids = model.generate(
         prompt_ids, 
@@ -394,7 +403,7 @@ def generate_text(args):
     )
     gen_time = time.time() - start_time
     
-    # Decode and print
+    # decode and print
     generated_text = tokenizer.decode(output_ids[0].tolist())
     print(generated_text)
     print("="*50)
@@ -402,12 +411,12 @@ def generate_text(args):
     print(f"Settings: temp={args.temperature}, top_k={args.top_k}, top_p={args.top_p}")
 
 
-# Main 
+# main 
 def main():
     parser = argparse.ArgumentParser(description="Mini LLM - Train or generate text")
     subparsers = parser.add_subparsers(dest='command', help='What to do')
     
-    # Train command
+    # training the command
     train_parser = subparsers.add_parser('train', help='Train a new model')
     train_parser.add_argument("--data", type=str, required=True, help="Text file to train on")
     train_parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
@@ -417,7 +426,7 @@ def main():
     train_parser.add_argument("--resume", type=str, help="Checkpoint to resume from")
     train_parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     
-    # Generate command  
+    # generate command  
     gen_parser = subparsers.add_parser('generate', help='Generate text from trained model')
     gen_parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint")
     gen_parser.add_argument("--prompt", type=str, default="The meaning of life is", help="Starting text")
@@ -443,5 +452,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-#Finally, yes it is still messy and imperfect but will be sorted in future versions
+#Finally, yes it is still messy and imperfect in terms of memory/speed but will be sorted in future versions
 #https://github.com/Aranya-Marjara
