@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """
-Minimal GPT-style decoder-only Transformer implemented for educational purposes.
 
 This project was written to understand core LLM components such as:
 - causal self-attention and masking
