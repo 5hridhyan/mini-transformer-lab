@@ -1,14 +1,7 @@
 # mini-transformer-lab
 
-A compact, educational transformer language model built from scratch in PyTorch, intended purely for learning and experimentation.
+A compact, educational transformer language model built with PyTorch, intended purely for learning and experimentation.
 
-
-## Disclaimer
-
-This project was implemented manually from scratch as a learning exercise.  
-AI tools were used only during debugging and refinement — to reason about model behavior, identify mistakes, and suggest adjustments or removals.
-
-All architecture, implementation, and final code in this repository are authored by me.
 
 
 ### Setup
