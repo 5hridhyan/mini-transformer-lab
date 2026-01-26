@@ -310,7 +310,7 @@ def train_model(args):
     print(f"Training Mini transformer on '{args.data}' with {tok.vocab_size} tokens")
     print(f"Context length: {cfg.context_length}, Model dim: {cfg.d_model}")
     print("=" * 60)
-#TL works better than expect!!
+#TL works better than expected!!
     
     # if you are resuming from a checkpoint
     start_epoch = 1
