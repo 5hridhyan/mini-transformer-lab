@@ -307,7 +307,7 @@ def train_model(args):
     model = MiniTransformer(cfg).to(args.device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
-    print(f"Training Mini LLM on '{args.data}' with {tok.vocab_size} tokens")
+    print(f"Training Mini transformer on '{args.data}' with {tok.vocab_size} tokens")
     print(f"Context length: {cfg.context_length}, Model dim: {cfg.d_model}")
     print("=" * 60)
 #TL works better than expect!!
