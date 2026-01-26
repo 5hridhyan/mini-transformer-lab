@@ -441,7 +441,7 @@ def main():
         print("Please specify 'train' or 'generate'")
         print("\nExamples:")
         print("  python3 mini-transformer-lab.py train --data your_text.txt --epochs 10 --context_length 64 --batch_size 8")
-        print("  python3 mini-transformer-lab.py generate --checkpoint checkpoint_epoch_10.pt --prompt "The future of AI is")
+        print('  python3 mini-transformer-lab.py generate --checkpoint checkpoint_epoch_10.pt --prompt "The future of AI is"')
 
 
 
