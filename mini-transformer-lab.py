@@ -2,11 +2,11 @@
 """
 
 This project was written to understand core LLM components like, causal self-attention and masking, pre-norm Transformer blocks, autoregressive training dynamics,sampling strategies (temperature, top-k, top-p)
-
+Don't expect anything fancy! :)
 """
 # NOTE:
 # An earlier version used a different attention/layout which led to unstable loss :(
-# during training. This version simplifies the block structure for stability.
+# during training. This version simplifies the block structure for stability, I hope so.....
 
 
 
@@ -34,7 +34,7 @@ class ModelConfig:
     use_learned_positions: bool = True
 
 
-# Positional Encodings 
+# the positional encoding of it
 class SinusoidalPositionalEmbedding(nn.Module):
     """Classic transformer sine-cosine positions (from 'Attention is All You Need')."""
     def __init__(self, dim: int, max_len: int = 2048):
@@ -49,7 +49,7 @@ class SinusoidalPositionalEmbedding(nn.Module):
         self.register_buffer("pe", pe, persistent=False)
 
     def forward(self, x):
-        # Return positional encodings for the sequence length of x
+        # come back with positional encodings for the sequence length of x
         return self.pe[:, :x.size(1)]
 
 
@@ -153,7 +153,7 @@ class MiniTransformer(nn.Module):
             pos = torch.arange(T, device=tokens.device).unsqueeze(0)
             pos = self.pos_embed(pos)
         else:
-            # a dummy tensor to get the right shape
+            # last attempt as a workaround of a dummy tensor to fix it!
             dummy = torch.zeros(1, T, self.cfg.d_model, device=tokens.device)
             pos = self.pos_embed(dummy)
         x = self.drop(tok + pos)
@@ -288,7 +288,7 @@ def load_checkpoint(path, device):
     return model, tokenizer, cfg, checkpoint
 
 
-# loop (training)
+# the training loop aka TL
 def train_model(args):
     """The main training function - fixed to actually train properly!"""
     print(f"Loading data from {args.data}...")
@@ -310,8 +310,9 @@ def train_model(args):
     print(f"Training Mini LLM on '{args.data}' with {tok.vocab_size} tokens")
     print(f"Context length: {cfg.context_length}, Model dim: {cfg.d_model}")
     print("=" * 60)
-
-    # if resuming from a checkpoint
+#TL works better than expect!!
+    
+    # if you are resuming from a checkpoint
     start_epoch = 1
     if args.resume:
         print(f"Resuming from {args.resume}...")
@@ -320,7 +321,7 @@ def train_model(args):
         start_epoch = checkpoint["epoch"] + 1
         print(f"Resumed from epoch {checkpoint['epoch']}")
 
-    # calculating how many batches from training data
+    # calculating how many batches from the training data
     steps_per_epoch = max(1, len(train_data) // (args.batch_size * cfg.context_length))
     print(f"Training with {steps_per_epoch} steps per epoch")
     print(f"Total training steps: {steps_per_epoch * args.epochs}")
@@ -344,18 +345,18 @@ def train_model(args):
         # calculate average training loss for the epoch
         avg_train_loss = total_train_loss / steps_per_epoch
         
-        # validation
+        # validation/veroscity 
         val_loss = estimate_loss(model, val_data, args.batch_size, cfg.context_length, args.device)
         epoch_time = time.time() - epoch_start
         
         print(f"epoch {epoch:02d}/{args.epochs} | train {avg_train_loss:.4f} | val {val_loss:.4f} | time {epoch_time:.1f}s")
 
-        # save checkpoint
+        # save the checkpoints
         if epoch % 5 == 0 or epoch == args.epochs:
             save_path = f"checkpoint_epoch_{epoch}.pt"
             save_checkpoint(model, opt, tok, epoch, save_path)
 
-    # Final sample generation
+    # the final sample generation
     print("\n" + "="*60)
     print("Final generation sample:")
     print("="*60)
@@ -397,7 +398,7 @@ def generate_text(args):
     )
     gen_time = time.time() - start_time
     
-    # decode and print
+    # decode it and print
     generated_text = tokenizer.decode(output_ids[0].tolist())
     print(generated_text)
     print("="*50)
@@ -410,7 +411,7 @@ def main():
     parser = argparse.ArgumentParser(description="Mini LLM - Train or generate text")
     subparsers = parser.add_subparsers(dest='command', help='What to do')
     
-    # training the command
+    # command training
     train_parser = subparsers.add_parser('train', help='Train a new model')
     train_parser.add_argument("--data", type=str, required=True, help="Text file to train on")
     train_parser.add_argument("--epochs", type=int, default=10, help="Number of epochs")
@@ -420,7 +421,7 @@ def main():
     train_parser.add_argument("--resume", type=str, help="Checkpoint to resume from")
     train_parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     
-    # generate command  
+    # and generate it! 
     gen_parser = subparsers.add_parser('generate', help='Generate text from trained model')
     gen_parser.add_argument("--checkpoint", type=str, required=True, help="Model checkpoint")
     gen_parser.add_argument("--prompt", type=str, default="The meaning of life is", help="Starting text")
@@ -439,9 +440,10 @@ def main():
     else:
         print("Please specify 'train' or 'generate'")
         print("\nExamples:")
-        print("  python mini_llm.py train --data my_book.txt --epochs 20")
-        print("  python mini_llm.py generate --checkpoint checkpoint_epoch_10.pt --prompt 'Once upon a'")
-        print("  python mini_llm.py train --data my_book.txt --resume checkpoint_epoch_5.pt --epochs 10")
+        print("  python3 mini-transformer-lab.py train --data your_text.txt --epochs 10 --context_length 64 --batch_size 8")
+        print("  python3 mini-transformer-lab.py generate --checkpoint checkpoint_epoch_10.pt --prompt "The future of AI is")
+
+
 
 
 if __name__ == "__main__":
