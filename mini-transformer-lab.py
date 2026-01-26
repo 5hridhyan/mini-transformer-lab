@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-
+the honest disclaimer, yes it is inspired by Karpathy's nanoGPT, but not implemented at that scale/logic
 This project was written to understand core LLM components like, causal self-attention and masking, pre-norm Transformer blocks, autoregressive training dynamics,sampling strategies (temperature, top-k, top-p)
 Don't expect anything fancy! :)
 """
