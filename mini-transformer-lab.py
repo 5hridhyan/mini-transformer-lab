@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
 """
 
-This project was written to understand core LLM components such as:
-- causal self-attention and masking
-- pre-norm Transformer blocks
-- autoregressive training dynamics
-- sampling strategies (temperature, top-k, top-p)
+This project was written to understand core LLM components like, causal self-attention and masking, pre-norm Transformer blocks, autoregressive training dynamics,sampling strategies (temperature, top-k, top-p)
 
-It is intentionally small and inefficient compared to modern LLMs.
 """
 # NOTE:
 # An earlier version used a different attention/layout which led to unstable loss :(
