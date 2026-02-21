@@ -41,18 +41,6 @@ Open-source research and tinkering allow anyone to learn how these systems work.
 This text exists to provide enough data for your mini-transformer-lab model to train successfully, test attention layers, and generate a few coherent lines. Keep experimenting, because every small step adds up to something bigger in the world of AI.
  ```
 
-
-### Basic Usage
-# Train a new model on your text (use smaller context length — recommended)
- ```
-python3 mini-transformer-lab.py train --data your_text.txt --epochs 10 --context_length 64 --batch_size 8
- ```
-
-# Generate some text
- ```
-python3 mini-transformer-lab.py generate --checkpoint checkpoint_epoch_10.pt --prompt "The future of AI is"
- ```
-
 ### Troubleshooting
 
 - **"Data too short for context length"**  
