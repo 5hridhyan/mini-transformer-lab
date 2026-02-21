@@ -3,7 +3,6 @@
 mini transformer v2
 if you're reading this: yes, it actually works. no, i don't know why either.
 author: 5hridhyan/Aranya-Marjara (yeah just a 11th grader if you can make it better do it, since I couldn't!)
-license: mit (do whatever you want, just don't blame me if it burns your gpu)
 """
 
 import argparse
