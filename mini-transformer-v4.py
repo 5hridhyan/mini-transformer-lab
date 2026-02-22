@@ -1,28 +1,18 @@
 #!/usr/bin/env python3
 """
-MARAJARA v1 a "successor" of "mini-transformer"versions , now with all fixes and optimizations from "mini-transformer" 
-MARJARA = Model Architecture for Research in Joint Artificial Reasoning Algorithms
-if you're reading this: it scales, generates coherent text, the cache is solid,
-and now the MoE is faster, validation is clean, and best checkpoints are based on CE loss.
-author: 5hridhyan
+mini transformer v4 – production‑ready, research‑grade transformer from scratch
+If you're reading this: it now scales, generates coherent text, and won't lose your cache.
+author: 5hridhyan/Aranya-Marjara (still 11th grade, but now with v4 under the belt)
 
-changelog v1, from previosu ones final:
-- past_length finally works in all layers (i'm dumb)
-- ema init before compile/ddp (makes sense now)
-- gradient checkpointing with training guard (so it doesnt break)
-- kv cache now tracks itself (one source of truth)
-- config handling cleaner (kinda)
-- moe aux losses separate (so i can see them)
-- repetition penalty only on recent tokens (64)
-- MoE routing now uses grouped expert computation (faster)
-- validation loss excludes aux losses for clean perplexity
-- gradient logging adaptive
-- tokenizer configurable
-- weight decay excludes biases, norms, embeddings (proper)
-- best model saved based on CE loss, not total loss
-- torch.load warning fixed with weights_only=False
-- perplexity calculation safe (clamped)
-- fixed all issues pointed out by reviewers
+Changelog v4 final:
+- past_length now correctly propagated through all layers (critical bug fix)
+- EMA initialization before compile/DDP
+- Gradient checkpointing integration with proper training guard
+- KV cache single source of truth for seen_tokens
+- Cleaner config handling
+- MoE auxiliary losses tracked separately
+- Repetition penalty simplified but effective
+- All known issues from reviews addressed
 """
 
 import argparse
@@ -58,7 +48,7 @@ if torch.cuda.is_available():
 
 # -------------------- Configuration --------------------
 @dataclass
-class HParams:
+class Config:
     vocab_size: int = 50304
     d_model: int = 512
     n_heads: int = 8
@@ -80,7 +70,7 @@ class HParams:
     # Regularization & init
     weight_tying: bool = True
     init_std: float = 0.02
-    scale_init_by_depth: bool = True   # if True, scale output proj by 1/sqrt(2*n_layers)
+    init_scaling: float = 1.0 / math.sqrt(2.0)
 
     # Efficiency
     gradient_checkpointing: bool = False
@@ -111,7 +101,7 @@ class HParams:
         assert self.n_heads % self.n_kv_heads == 0
 
 # -------------------- Rotary Embeddings --------------------
-class RotaryPos(nn.Module):
+class RotaryEmbedding(nn.Module):
     def __init__(self, dim: int, max_seq_len: int = 4096, theta: float = 10000.0):
         super().__init__()
         self.dim = dim
@@ -144,11 +134,10 @@ class RotaryPos(nn.Module):
         return torch.cat((-x2, x1), dim=-1)
 
 # -------------------- KV Cache (unified, self‑tracking) --------------------
-class CacheThingy:
+class KVCache:
     """
-    holds keys and values for all layers. knows its own length so i dont have to track it.
-    seen_tokens is updated in the model's forward after all layers have written,
-    NOT in update() because multiple layers write to the same slots.
+    Unified key‑value cache for all layers.
+    Tracks its own length so the rest of the code doesn't have to.
     """
     def __init__(self, n_layers: int, batch_size: int, n_kv_heads: int, head_dim: int,
                  max_seq_len: int, device: torch.device, dtype: torch.dtype = torch.float32):
@@ -163,10 +152,10 @@ class CacheThingy:
         shape = (n_layers, batch_size, n_kv_heads, max_seq_len, head_dim)
         self.k_cache = torch.zeros(shape, device=device, dtype=dtype)
         self.v_cache = torch.zeros(shape, device=device, dtype=dtype)
-        self.seen_tokens = 0   # how many tokens we've stored so far
+        self.seen_tokens = 0   # total tokens stored so far
 
     def update(self, layer_idx: int, k: torch.Tensor, v: torch.Tensor):
-        """store new k/v for a layer at the current position (all layers write to the same slot)."""
+        """Store new keys/values for a specific layer at the current seen_tokens position."""
         seq_len = k.size(2)
         start = self.seen_tokens
         end = start + seq_len
@@ -174,7 +163,7 @@ class CacheThingy:
         self.v_cache[layer_idx, :, :, start:end, :] = v
 
     def get(self, layer_idx: int):
-        """return all cached k/v for a layer up to seen_tokens."""
+        """Return all cached keys/values for a layer up to seen_tokens."""
         return (self.k_cache[layer_idx, :, :, :self.seen_tokens, :],
                 self.v_cache[layer_idx, :, :, :self.seen_tokens, :])
 
@@ -184,7 +173,7 @@ class CacheThingy:
         self.seen_tokens = 0
 
 # -------------------- RMSNorm --------------------
-class SimpleNorm(nn.Module):
+class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
@@ -195,8 +184,8 @@ class SimpleNorm(nn.Module):
         return x * torch.rsqrt(variance + self.eps) * self.weight
 
 # -------------------- Attention --------------------
-class Attn(nn.Module):
-    def __init__(self, cfg: HParams, layer_idx: int):
+class Attention(nn.Module):
+    def __init__(self, cfg: Config, layer_idx: int):
         super().__init__()
         self.n_heads = cfg.n_heads
         self.n_kv_heads = cfg.n_kv_heads
@@ -211,9 +200,9 @@ class Attn(nn.Module):
         self.out_proj = nn.Linear(cfg.n_heads * self.head_dim, cfg.d_model, bias=False)
 
         self.drop = nn.Dropout(cfg.dropout)
-        self.rope = RotaryPos(self.head_dim, max_seq_len=cfg.context_length * 2, theta=cfg.rope_theta)
+        self.rope = RotaryEmbedding(self.head_dim, max_seq_len=cfg.context_length * 2, theta=cfg.rope_theta)
 
-        self.cache: Optional[CacheThingy] = None
+        self.cache: Optional[KVCache] = None
 
     def _repeat_kv(self, x: torch.Tensor, n_rep: int) -> torch.Tensor:
         if n_rep == 1:
@@ -285,7 +274,7 @@ class Attn(nn.Module):
 
 # -------------------- SwiGLU --------------------
 class SwiGLU(nn.Module):
-    def __init__(self, cfg: HParams):
+    def __init__(self, cfg: Config):
         super().__init__()
         self.gate = nn.Linear(cfg.d_model, cfg.d_ff, bias=False)
         self.up = nn.Linear(cfg.d_model, cfg.d_ff, bias=False)
@@ -295,9 +284,9 @@ class SwiGLU(nn.Module):
     def forward(self, x):
         return self.drop(self.down(F.silu(self.gate(x)) * self.up(x)))
 
-# -------------------- MoE (optimized with grouped expert computation) --------------------
-class MoELayer(nn.Module):
-    def __init__(self, cfg: HParams):
+# -------------------- MoE --------------------
+class MoE(nn.Module):
+    def __init__(self, cfg: Config):
         super().__init__()
         self.n_experts = cfg.n_experts
         self.n_active_experts = cfg.n_active_experts
@@ -311,10 +300,8 @@ class MoELayer(nn.Module):
         self.w2 = nn.Parameter(torch.randn(cfg.n_experts, cfg.d_ff, cfg.d_model))
         self.w3 = nn.Parameter(torch.randn(cfg.n_experts, cfg.d_model, cfg.d_ff))
 
-        # Init with depth scaling if enabled
-        std = cfg.init_std / math.sqrt(2 * cfg.n_layers) if cfg.scale_init_by_depth else cfg.init_std
         nn.init.normal_(self.w1, std=cfg.init_std)
-        nn.init.normal_(self.w2, std=std)   # scaled
+        nn.init.normal_(self.w2, std=cfg.init_std / math.sqrt(2 * cfg.n_layers) if cfg.init_scaling else cfg.init_std)
         nn.init.normal_(self.w3, std=cfg.init_std)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -341,7 +328,7 @@ class MoELayer(nn.Module):
 
         outputs = torch.zeros(n_tokens, d_model, device=x.device, dtype=x.dtype)
 
-        # Process each expert's tokens (naive loop; for large scale use custom kernel)
+        # Process each expert's tokens
         unique_experts, counts = torch.unique_consecutive(sorted_expert_indices, return_counts=True)
         start = 0
         for expert_idx, count in zip(unique_experts, counts):
@@ -350,7 +337,6 @@ class MoELayer(nn.Module):
             expert_weight = sorted_weights[start:end, None]
 
             expert_tokens = x_flat[expert_token_idx]
-            # Batched matmul for all tokens assigned to this expert
             gate_out = F.silu(torch.mm(expert_tokens, self.w1[expert_idx]))
             up_out = torch.mm(expert_tokens, self.w3[expert_idx])
             expert_out = torch.mm(gate_out * up_out, self.w2[expert_idx])
@@ -375,12 +361,12 @@ class MoELayer(nn.Module):
 
 # -------------------- Transformer Block --------------------
 class Block(nn.Module):
-    def __init__(self, cfg: HParams, layer_idx: int):
+    def __init__(self, cfg: Config, layer_idx: int):
         super().__init__()
-        self.norm1 = SimpleNorm(cfg.d_model)
-        self.norm2 = SimpleNorm(cfg.d_model)
-        self.attn = Attn(cfg, layer_idx)
-        self.ffn = MoELayer(cfg) if cfg.use_moe else SwiGLU(cfg)
+        self.norm1 = RMSNorm(cfg.d_model)
+        self.norm2 = RMSNorm(cfg.d_model)
+        self.attn = Attention(cfg, layer_idx)
+        self.ffn = MoE(cfg) if cfg.use_moe else SwiGLU(cfg)
         self.drop1 = nn.Dropout(cfg.dropout)
         self.drop2 = nn.Dropout(cfg.dropout)
         self.gradient_checkpointing = cfg.gradient_checkpointing
@@ -396,7 +382,7 @@ class Block(nn.Module):
         # FFN
         residual = x
         x = self.norm2(x)
-        if isinstance(self.ffn, MoELayer):
+        if isinstance(self.ffn, MoE):
             x, losses = self.ffn(x)
         else:
             x = self.ffn(x)
@@ -407,47 +393,45 @@ class Block(nn.Module):
 
     def forward(self, x: torch.Tensor, use_cache: bool = False, past_length: int = 0):
         if self.gradient_checkpointing and self.training:
-            # Use checkpointing during training only (would break cache otherwise)
+            # Use checkpointing during training only
             return checkpoint(self._forward, x, use_cache, past_length)
         else:
             return self._forward(x, use_cache, past_length)
 
 # -------------------- Main Model --------------------
-class MarajaraModel(nn.Module):
-    def __init__(self, cfg: HParams):
+class MiniGPT(nn.Module):
+    def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
 
         self.token_embed = nn.Embedding(cfg.vocab_size, cfg.d_model)
         self.drop = nn.Dropout(cfg.dropout)
         self.blocks = nn.ModuleList([Block(cfg, i) for i in range(cfg.n_layers)])
-        self.norm = SimpleNorm(cfg.d_model)
+        self.norm = RMSNorm(cfg.d_model)
         self.head = nn.Linear(cfg.d_model, cfg.vocab_size, bias=False)
 
         if cfg.weight_tying:
             self.head.weight = self.token_embed.weight
 
         self._init_weights()
-        self.kv_cache: Optional[CacheThingy] = None
+        self.kv_cache: Optional[KVCache] = None
 
     def _init_weights(self):
         for name, module in self.named_modules():
             if isinstance(module, nn.Linear):
-                # Determine if this is an output projection (should be scaled)
-                is_out_proj = "out_proj" in name or "w2" in name
-                if is_out_proj and self.cfg.scale_init_by_depth:
-                    std = self.cfg.init_std / math.sqrt(2 * self.cfg.n_layers)
+                if "out_proj" in name or "w2" in name:
+                    std = self.cfg.init_std / math.sqrt(2 * self.cfg.n_layers) if self.cfg.init_scaling else self.cfg.init_std
+                    nn.init.normal_(module.weight, mean=0.0, std=std)
                 else:
-                    std = self.cfg.init_std
-                nn.init.normal_(module.weight, mean=0.0, std=std)
+                    nn.init.normal_(module.weight, mean=0.0, std=self.cfg.init_std)
             elif isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, mean=0.0, std=self.cfg.init_std)
 
-    def setup_cache(self, batch_size: int) -> CacheThingy:
+    def setup_cache(self, batch_size: int) -> KVCache:
         head_dim = self.cfg.d_model // self.cfg.n_heads
         device = next(self.parameters()).device
         dtype = next(self.parameters()).dtype
-        self.kv_cache = CacheThingy(
+        self.kv_cache = KVCache(
             n_layers=self.cfg.n_layers,
             batch_size=batch_size,
             n_kv_heads=self.cfg.n_kv_heads,
@@ -482,10 +466,12 @@ class MarajaraModel(nn.Module):
 
         aux_losses = {}
         for block in self.blocks:
-            # Always unpack because block returns (x, losses)
-            x, losses = block(x, use_cache=use_cache, past_length=past_length)
-            for k, v in losses.items():
-                aux_losses[k] = aux_losses.get(k, 0.0) + v
+            if isinstance(block.ffn, MoE):
+                x, losses = block(x, use_cache=use_cache, past_length=past_length)
+                for k, v in losses.items():
+                    aux_losses[k] = aux_losses.get(k, 0.0) + v
+            else:
+                x = block(x, use_cache=use_cache, past_length=past_length)
 
         x = self.norm(x)
         logits = self.head(x)
@@ -518,9 +504,6 @@ class MarajaraModel(nn.Module):
         _ = self(prompt, use_cache=True)
 
         generated = prompt.clone()
-        stop_set = set(stop_tokens) if stop_tokens else None
-        recent_window = 64  # penalize only last 64 tokens
-
         for _ in range(max_new_tokens):
             if cache.seen_tokens >= self.cfg.context_length * 2:
                 logging.warning("Reached max cache length, stopping generation")
@@ -528,17 +511,14 @@ class MarajaraModel(nn.Module):
 
             last_token = generated[:, -1:]
 
-            out = self(last_token, use_cache=True)
-            logits = out[0] if isinstance(out, tuple) else out
+            logits = self(last_token, use_cache=True)
             logits = logits[:, -1, :]  # (batch, vocab)
 
-            # Repetition penalty on recent tokens only (less aggressive)
+            # Repetition penalty (simple but effective)
             if repetition_penalty != 1.0:
                 for i in range(batch_size):
-                    # take last recent_window tokens
-                    recent = generated[i, -recent_window:].tolist()
-                    # use set for uniqueness
-                    for token in set(recent):
+                    seen = set(generated[i].tolist())
+                    for token in seen:
                         logits[i, token] /= repetition_penalty
 
             logits = logits / max(temperature, 1e-6)
@@ -565,7 +545,7 @@ class MarajaraModel(nn.Module):
             next_token = torch.multinomial(probs, num_samples=1)
             generated = torch.cat([generated, next_token], dim=1)
 
-            if stop_set and next_token[0, 0] in stop_set:
+            if stop_tokens and next_token[0, 0] in stop_tokens:
                 break
 
         self.clear_cache()
@@ -586,7 +566,7 @@ class TextDataset(Dataset):
         return x, y
 
 # -------------------- Trainer --------------------
-class Learner:
+class Trainer:
     def __init__(self, args):
         self.args = args
         self._setup_logging()
@@ -594,7 +574,7 @@ class Learner:
         self._setup_device()
         self._load_data()
         self._build_model()
-        self._setup_ema()
+        self._setup_ema()                # moved before compile/DDP
         self._maybe_compile()
         self._maybe_ddp()
         self._setup_optimizer_scheduler()
@@ -602,7 +582,7 @@ class Learner:
         self._setup_checkpointing()
 
         self.current_step = 0
-        self.best_val_ce = float("inf")   # track CE for best model
+        self.best_val_loss = float("inf")
 
     def _setup_logging(self):
         logging.basicConfig(
@@ -620,8 +600,7 @@ class Learner:
         if self.is_distributed:
             if not torch.cuda.is_available():
                 raise RuntimeError("Distributed training requires CUDA")
-            if not dist.is_initialized():
-                dist.init_process_group(backend="nccl")
+            dist.init_process_group(backend="nccl")
             self.world_size = dist.get_world_size()
             self.rank = dist.get_rank()
             torch.cuda.set_device(self.local_rank)
@@ -639,14 +618,7 @@ class Learner:
         self.logger.info(f"Loading data from {self.args.data}")
         with open(self.args.data, "r", encoding="utf-8") as f:
             text = f.read()
-
-        # Use configurable tokenizer
-        try:
-            self.tokenizer = tiktoken.get_encoding(self.args.tokenizer)
-        except Exception as e:
-            self.logger.error(f"Tokenizer '{self.args.tokenizer}' not found, falling back to cl100k_base")
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
-
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
         tokens = self.tokenizer.encode(text)
         self.args.vocab_size = self.tokenizer.n_vocab
         data = torch.tensor(tokens, dtype=torch.long)
@@ -690,27 +662,27 @@ class Learner:
 
     def _build_model(self):
         preset_map = {
-            "tiny": HParams.tiny,
-            "small": HParams.small,
-            "medium": HParams.medium,
-            "large": HParams.large,
+            "tiny": Config.tiny,
+            "small": Config.small,
+            "medium": Config.medium,
+            "large": Config.large,
         }
         if self.args.model_size in preset_map:
             cfg = preset_map[self.args.model_size]()
         else:
-            cfg = HParams()
+            cfg = Config()   # default
         cfg.vocab_size = self.args.vocab_size
         cfg.context_length = self.args.context_length
         cfg.use_moe = self.args.use_moe
         cfg.sliding_window = self.args.sliding_window
         cfg.gradient_checkpointing = self.args.gradient_checkpointing
         self.cfg = cfg
-        self.model = MarajaraModel(cfg).to(self.device)
+        self.model = MiniGPT(cfg).to(self.device)
 
     def _setup_ema(self):
         self.ema_model = None
         if self.args.use_ema:
-            self.ema_model = MarajaraModel(self.cfg).to(self.device)
+            self.ema_model = MiniGPT(self.cfg).to(self.device)
             self.ema_model.load_state_dict(self.model.state_dict())
             for param in self.ema_model.parameters():
                 param.requires_grad = False
@@ -727,33 +699,21 @@ class Learner:
             self.model = DDP(self.model, device_ids=[self.local_rank])
 
     def _setup_optimizer_scheduler(self):
-        # Separate parameters for weight decay
-        decay_params = []
-        no_decay_params = []
-        for name, param in self.model.named_parameters():
-            if param.ndim < 2 or "norm" in name.lower() or "embed" in name.lower():
-                no_decay_params.append(param)
-            else:
-                decay_params.append(param)
-
-        param_groups = [
-            {"params": decay_params, "weight_decay": 0.1},
-            {"params": no_decay_params, "weight_decay": 0.0},
-        ]
-
         try:
             self.optimizer = AdamW(
-                param_groups,
+                self.model.parameters(),
                 lr=self.args.lr,
                 betas=(0.9, 0.95),
+                weight_decay=0.1,
                 fused=True,
             )
             self.logger.info("Using fused AdamW")
         except TypeError:   # fused not available on older torch or CPU
             self.optimizer = AdamW(
-                param_groups,
+                self.model.parameters(),
                 lr=self.args.lr,
                 betas=(0.9, 0.95),
+                weight_decay=0.1,
             )
             self.logger.info("Fused AdamW not available, using regular")
 
@@ -766,7 +726,6 @@ class Learner:
         self.scheduler = SequentialLR(self.optimizer, [warmup, cosine], milestones=[self.args.warmup_steps])
 
     def _setup_mixed_precision(self):
-        self.precision_dtype = torch.float32  # default
         self.use_amp = self.args.mixed_precision and self.device.type == "cuda"
         if self.use_amp:
             if torch.cuda.is_bf16_supported():
@@ -775,12 +734,7 @@ class Learner:
             else:
                 self.precision_dtype = torch.float16
                 self.logger.info("Using float16 mixed precision")
-        # Use the newer GradScaler API if available (PyTorch 2.x)
-        try:
-            from torch.amp import GradScaler
-            self.scaler = GradScaler('cuda') if self.use_amp else None
-        except ImportError:
-            self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
     def _setup_checkpointing(self):
         self.checkpoint_dir = Path(self.args.output_dir)
@@ -797,14 +751,12 @@ class Learner:
                 if ema_name in ema_state:
                     ema_state[ema_name].mul_(self.ema_decay).add_(param, alpha=1 - self.ema_decay)
 
-    def _compute_loss(self, logits, targets, aux_losses=None) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Returns (total_loss, ce_loss)"""
-        ce_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
-        total_loss = ce_loss
+    def _compute_loss(self, logits, targets, aux_losses=None):
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         if aux_losses:
             for k, v in aux_losses.items():
-                total_loss = total_loss + v
-        return total_loss, ce_loss
+                loss = loss + v
+        return loss
 
     def train_epoch(self, epoch: int):
         if self.train_sampler is not None:
@@ -812,25 +764,24 @@ class Learner:
 
         self.model.train()
         total_loss = 0.0
-        total_ce_loss = 0.0
         total_aux = {"aux": 0.0, "z": 0.0} if self.cfg.use_moe else {}
         num_batches = 0
         self.optimizer.zero_grad()
-
-        # Determine gradient logging frequency (adaptive)
-        log_every = max(1, len(self.train_loader) // 100)
 
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch+1}", disable=self.rank != 0)
         for batch_idx, (x, y) in enumerate(pbar):
             x, y = x.to(self.device), y.to(self.device)
 
             with torch.autocast(device_type=self.device.type, dtype=self.precision_dtype, enabled=self.use_amp):
-                out = self.model(x)
-                logits, aux_losses = out if isinstance(out, tuple) else (out, None)
-                loss, ce_loss = self._compute_loss(logits, y, aux_losses)
+                if self.cfg.use_moe:
+                    logits, aux_losses = self.model(x)
+                else:
+                    logits = self.model(x)
+                    aux_losses = None
+                loss = self._compute_loss(logits, y, aux_losses)
 
             scaled_loss = loss / self.args.accumulation_steps
-            if self.use_amp and self.scaler is not None:
+            if self.use_amp:
                 self.scaler.scale(scaled_loss).backward()
             else:
                 scaled_loss.backward()
@@ -841,14 +792,13 @@ class Learner:
                 self.current_step += 1
 
             total_loss += loss.item()
-            total_ce_loss += ce_loss.item()
             if aux_losses:
                 for k in total_aux:
                     total_aux[k] += aux_losses.get(k, 0.0)
             num_batches += 1
 
-            if self.rank == 0 and (batch_idx + 1) % log_every == 0:
-                postfix = {"loss": f"{loss.item():.4f}", "ce": f"{ce_loss.item():.4f}"}
+            if self.rank == 0:
+                postfix = {"loss": f"{loss.item():.4f}"}
                 if aux_losses:
                     postfix.update({k: f"{v.item():.4f}" for k, v in aux_losses.items()})
                 pbar.set_postfix(postfix)
@@ -859,19 +809,16 @@ class Learner:
             self.current_step += 1
 
         avg_loss = total_loss / num_batches
-        avg_ce = total_ce_loss / num_batches
         if self.cfg.use_moe:
             avg_aux = {k: v / num_batches for k, v in total_aux.items()}
-            return avg_loss, avg_ce, avg_aux
-        return avg_loss, avg_ce, {}
+            return avg_loss, avg_aux
+        return avg_loss, {}
 
     def _optimizer_step(self):
-        if self.use_amp and self.scaler is not None:
+        if self.use_amp:
             self.scaler.unscale_(self.optimizer)
-        grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
-        if self.rank == 0 and self.current_step % 100 == 0:  # log every 100 steps
-            self.logger.info(f"Step {self.current_step} grad norm: {grad_norm:.4f}")
-        if self.use_amp and self.scaler is not None:
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
+        if self.use_amp:
             self.scaler.step(self.optimizer)
             self.scaler.update()
         else:
@@ -880,35 +827,27 @@ class Learner:
         self._update_ema()
 
     @torch.no_grad()
-    def validate(self) -> Tuple[float, float]:
-        """Returns (avg_total_loss, avg_ce_loss)"""
+    def validate(self):
         self.model.eval()
         total_loss = 0.0
-        total_ce_loss = 0.0
         num_batches = 0
 
         for x, y in self.val_loader:
             x, y = x.to(self.device), y.to(self.device)
             with torch.autocast(device_type=self.device.type, dtype=self.precision_dtype, enabled=self.use_amp):
-                out = self.model(x)
-                logits, aux_losses = out if isinstance(out, tuple) else (out, None)
-                loss, ce_loss = self._compute_loss(logits, y, aux_losses)
+                if self.cfg.use_moe:
+                    logits, aux_losses = self.model(x)
+                else:
+                    logits = self.model(x)
+                    aux_losses = None
+                loss = self._compute_loss(logits, y, aux_losses)
             total_loss += loss.item()
-            total_ce_loss += ce_loss.item()
             num_batches += 1
 
-        avg_loss = total_loss / num_batches
-        avg_ce = total_ce_loss / num_batches
-        # Use safe perplexity calculation (clamp ce to avoid overflow)
-        safe_ce = min(avg_ce, 20.0)  # exp(20) is huge, prevents inf
-        perplexity = math.exp(safe_ce)
-        if self.rank == 0:
-            self.logger.info(f"Validation total loss: {avg_loss:.4f}, CE loss: {avg_ce:.4f}, perplexity: {perplexity:.4f}")
-        return avg_loss, avg_ce
+        return total_loss / num_batches
 
     @torch.no_grad()
     def generate_sample(self, prompt: str, max_tokens: int = 100):
-        # Unwrap DDP if needed
         model = self.ema_model if self.ema_model is not None else self.model
         if self.is_distributed:
             model = model.module
@@ -925,7 +864,7 @@ class Learner:
         )
         return self.tokenizer.decode(generated[0].tolist())
 
-    def save_checkpoint(self, epoch: int, val_loss: float, val_ce: float, is_best: bool = False):
+    def save_checkpoint(self, epoch: int, val_loss: float, is_best: bool = False):
         if self.rank != 0:
             return
         model_state = self.model.module.state_dict() if self.is_distributed else self.model.state_dict()
@@ -934,11 +873,10 @@ class Learner:
             "model_state_dict": model_state,
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
-            "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
+            "scaler_state_dict": self.scaler.state_dict(),
             "val_loss": val_loss,
-            "val_ce": val_ce,
             "config": asdict(self.cfg),
-            "tokenizer_name": self.args.tokenizer,
+            "tokenizer_name": "cl100k_base",
             "args": vars(self.args),
         }
         if self.ema_model is not None:
@@ -951,18 +889,17 @@ class Learner:
         self.logger.info(f"Saved checkpoint at epoch {epoch}")
 
     def load_checkpoint(self, path: Union[str, Path]):
-        checkpoint = torch.load(path, map_location=self.device, weights_only=False)  # safe because we save dict
+        checkpoint = torch.load(path, map_location=self.device)
         if self.is_distributed:
             self.model.module.load_state_dict(checkpoint["model_state_dict"])
         else:
             self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        if checkpoint.get("scaler_state_dict") and self.scaler:
-            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
         if self.ema_model is not None and "ema_state_dict" in checkpoint:
             self.ema_model.load_state_dict(checkpoint["ema_state_dict"])
-        return checkpoint["epoch"], checkpoint.get("val_ce", float("inf"))
+        return checkpoint["epoch"], checkpoint["val_loss"]
 
     def train(self):
         start_epoch = 0
@@ -971,15 +908,15 @@ class Learner:
             self.logger.info(f"Resumed from epoch {start_epoch}")
 
         for epoch in range(start_epoch, self.args.epochs):
-            train_loss, train_ce, aux = self.train_epoch(epoch)
-            val_loss, val_ce = self.validate()
-            is_best = val_ce < self.best_val_ce
+            train_loss, aux = self.train_epoch(epoch)
+            val_loss = self.validate()
+            is_best = val_loss < self.best_val_loss
             if is_best:
-                self.best_val_ce = val_ce
+                self.best_val_loss = val_loss
 
             lr = self.scheduler.get_last_lr()[0]
             log_msg = (f"Epoch {epoch+1}/{self.args.epochs} | Train loss: {train_loss:.4f} | "
-                       f"Train CE: {train_ce:.4f} | Val CE: {val_ce:.4f} | LR: {lr:.2e} | {'BEST' if is_best else ''}")
+                       f"Val loss: {val_loss:.4f} | LR: {lr:.2e} | {'BEST' if is_best else ''}")
             if aux:
                 log_msg += f" | Aux: { {k: f'{v:.4f}' for k, v in aux.items()} }"
             self.logger.info(log_msg)
@@ -988,17 +925,16 @@ class Learner:
                 sample = self.generate_sample("The future of AI is")
                 self.logger.info(f"Sample:\n{sample}")
 
-            self.save_checkpoint(epoch + 1, val_loss, val_ce, is_best)
+            self.save_checkpoint(epoch + 1, val_loss, is_best)
 
         if self.is_distributed:
             dist.destroy_process_group()
 
 # -------------------- Main --------------------
 def main():
-    parser = argparse.ArgumentParser(description="MARAJARA v4 – modern transformer from scratch, now with all fixes")
+    parser = argparse.ArgumentParser(description="MiniGPT v4 – modern transformer from scratch")
     # Data
     parser.add_argument("--data", type=str, required=True, help="Path to text file")
-    parser.add_argument("--tokenizer", type=str, default="cl100k_base", help="tiktoken tokenizer name")
     parser.add_argument("--output_dir", type=str, default="checkpoints", help="Where to save checkpoints")
     # Model
     parser.add_argument("--model_size", type=str, default="small", choices=["tiny", "small", "medium", "large"])
@@ -1034,7 +970,7 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    trainer = Learner(args)
+    trainer = Trainer(args)
     trainer.train()
 
 if __name__ == "__main__":
