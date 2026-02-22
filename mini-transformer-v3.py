@@ -1048,7 +1048,7 @@ class Trainer:
 
 # -------------------- Main --------------------
 def main():
-    parser = argparse.ArgumentParser(description="MiniGPT v3 – modern transformer from scratch")
+    parser = argparse.ArgumentParser(description="Mini Transformer/Mini-GPT")
     # Data
     parser.add_argument("--data", type=str, required=True, help="Path to text file")
     parser.add_argument("--output_dir", type=str, default="checkpoints", help="Where to save checkpoints")
