@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-MARAJARA v4 – transformer from scratch, now with all fixes and optimizations
+MARAJARA v1 a "successor" of "mini-transformer"versions , now with all fixes and optimizations from "mini-transformer" 
+MARJARA = Model Architecture for Research in Joint Artificial Reasoning Algorithms
 if you're reading this: it scales, generates coherent text, the cache is solid,
 and now the MoE is faster, validation is clean, and best checkpoints are based on CE loss.
-author: me (11th grade, v4 done, named after myself because why not)
+author: 5hridhyan
 
-changelog v4 final:
+changelog v1, from previosu ones final:
 - past_length finally works in all layers (i'm dumb)
 - ema init before compile/ddp (makes sense now)
 - gradient checkpointing with training guard (so it doesnt break)
